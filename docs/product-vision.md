@@ -6,20 +6,20 @@ The system is designed to be reproducible and recoverable: OS configuration, ser
 
 ## Architectural Direction (Validated)
 
-- **Orchestrator**: Zig is the core runtime and process supervisor.
-- **XMPP transport**: implemented via `libstrophe` C bindings from Zig.
-- **Steer interface**: Emacs daemon controlled through `emacsclient --eval`.
-- **Drive interface**: Pi RPC over newline-delimited JSON on stdin/stdout.
-- **Concurrency model**: simple event loop (or `std.Thread` + queues), **not** an external actor framework.
-- **Packaging/deployment**: NixOS + flake-based declarations for reproducibility.
+* **Orchestrator**: Zig is the core runtime and process supervisor.
+* **XMPP transport**: implemented via `libstrophe` C bindings from Zig.
+* **Steer interface**: Emacs daemon controlled through `emacsclient --eval`.
+* **Drive interface**: Pi RPC over newline-delimited JSON on stdin/stdout.
+* **Concurrency model**: simple event loop (or `std.Thread` + queues), **not** an external actor framework.
+* **Packaging/deployment**: NixOS + flake-based declarations for reproducibility.
 
 ## Reliability Constraints and Guardrails
 
-- Emacs calls are treated as **sequential** operations (daemon is single-threaded).
-- Large Emacs return payloads should use chunking or file handoff when needed.
-- Pi protocol compatibility is protected by **pinning Pi to a fixed version/commit** in Nix.
-- JSONL framing is strictly LF-delimited (`\n`) at the Zig boundary.
-- Process-level failures (daemon missing, socket issues, hung subprocesses) are explicit error paths with timeout/restart handling.
+* Emacs calls are treated as **sequential** operations (daemon is single-threaded).
+* Large Emacs return payloads should use chunking or file handoff when needed.
+* Pi protocol compatibility is protected by **pinning Pi to a fixed version/commit** in Nix.
+* JSONL framing is strictly LF-delimited (`\n`) at the Zig boundary.
+* Process-level failures (daemon missing, socket issues, hung subprocesses) are explicit error paths with timeout/restart handling.
 
 ## Outcome
 
