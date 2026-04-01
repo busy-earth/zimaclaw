@@ -65,3 +65,4 @@ test "fang uses deterministic issue file path" {
 
     try testing.expectEqualStrings(expected, path);
 }
+
