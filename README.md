@@ -23,6 +23,7 @@ GitHub Actions runs `zig build test --summary all` on pull requests to `main` an
 
 Required branch/Linear/PR process for all engineers:
 - `docs/engineering-workflow.md`
+- `docs/branch-pr-reliability-loop.md`
 - `docs/new-engineer-onboarding.md`
 - `docs/molt-reliability-checklist.md`
 
