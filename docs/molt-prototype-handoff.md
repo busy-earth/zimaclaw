@@ -1,5 +1,7 @@
 # Zimaclaw Handoff — Next Steps From Current State
 
+> **Status note (2026-04-01):** This is a historical pre-implementation handoff snapshot. It intentionally reflects an earlier point when code had not been started. Use `README.md` and current repository contents as the source of truth for shipped status.
+
 ## 1. What is already done
 
 The groundwork pass is complete.

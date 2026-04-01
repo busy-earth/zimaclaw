@@ -1,5 +1,7 @@
 # Zimaclaw UI Layer: Svelte vs. LangGraph Deep Agent
 
+> **Status note (2026-04-01):** This is a forward-looking UI design doc. The current shipped Molt slice does not include UI/SSE streaming yet; treat this file as implementation guidance for deferred work listed in `README.md`.
+
 ## Executive Summary
 
 Building a Tailscale-accessible dashboard for Zimaclaw that visualizes XMPP message ingress and parallel Pi subagent streams is straightforward with plain SvelteKit — and that is the better choice. The LangGraph `deepagent` example is instructive as a UI *pattern* but requires the LangGraph Server runtime as a hard backend dependency; grafting it onto Zimaclaw would mean replacing Zig with a Node.js/Python orchestrator or building a shim layer, which defeats the purpose. A custom SvelteKit 5 app with Server-Sent Events (SSE) from httpz and Tailscale Serve for TLS is the clean, lightweight, reproducible path.

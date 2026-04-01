@@ -1,5 +1,9 @@
 # Zimaclaw Orchestration Layer: Mapping Real Orchestrator Patterns to Zig + Emacs
 
+> **Status note (2026-04-01):** This document describes the target orchestration architecture. For the currently shipped Molt slice, see `README.md` (`issue create/show`, local `molt run`, `inbox -> executing -> review|failed`, JSONL run trail). Items such as Jaw/XMPP ingress, Venom simulation flow, Shell/Web abstractions, and UI/SSE streaming are still deferred.
+>
+> **Maintenance note:** `docs/orchestration-deep-dive.md` is the canonical deep-dive source. `docs/architecture-deep-dive.md` is an alias entry point only. When shipped-vs-deferred boundaries change, update this file and `README.md` in the same PR.
+
 ## Overview
 
 Zimaclaw's architecture — Zig as the process supervisor, Emacs as the steerable workspace (computer), and Pi as the execution engine — maps cleanly onto patterns already proven in production orchestrators. Nullboiler (the Zig-native orchestrator under the NullClaw project) is the most directly transferable reference: it implements worker dispatch, subprocess lifecycle, async correlation, and SSE event streaming entirely in Zig without any external actor framework. Perplexity Computer's multi-agent routing model and CopilotKit's AG-UI event protocol provide the conceptual model for how Zimaclaw should think about the Emacs interface as a "computer tool" and how to structure observable streaming for the UI layer. This document maps all three reference systems to concrete Zimaclaw design decisions.

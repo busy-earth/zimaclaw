@@ -72,3 +72,34 @@ test "drive returns ProcessExitFailure when child exits non-zero" {
         }),
     );
 }
+
+test "drive can surface OutOfMemory under constrained allocator" {
+    const script =
+        "read line; echo '{\"kind\":\"pi_event\",\"payload\":\"0123456789012345678901234567890123456789\"}'";
+    const argv = &[_][]const u8{ "sh", "-c", script };
+
+    var saw_oom = false;
+    var fail_index: usize = 0;
+    while (fail_index < 512) : (fail_index += 1) {
+        var failing = std.testing.FailingAllocator.init(testing.allocator, .{
+            .fail_index = fail_index,
+        });
+        const allocator = failing.allocator();
+
+        var result = drive.runWithOptions(allocator, .{
+            .prompt = "hello",
+        }, .{
+            .command_argv = argv,
+        }) catch |err| switch (err) {
+            error.OutOfMemory => {
+                saw_oom = true;
+                break;
+            },
+            error.SpawnFailed => continue,
+            else => continue,
+        };
+        result.deinit(allocator);
+    }
+
+    try testing.expect(saw_oom);
+}

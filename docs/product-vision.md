@@ -1,5 +1,7 @@
 # Zimaclaw Product Vision
 
+> **Status note (2026-04-01):** This file describes the target product end-state. For what is shipped today in the Molt vertical slice versus deferred, use `README.md` as the source of truth.
+
 Zimaclaw is a single Zig binary that acts as a local orchestration service on a headless NixOS machine. It is not a chatbot wrapper around Pi. It is an **issue-shaped coding appliance** with a simulation-first workflow:
 
 1. a prompt arrives over XMPP,
