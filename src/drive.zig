@@ -94,7 +94,10 @@ pub fn runWithOptions(
     child.stdin = null;
 
     const maybe_line = drive_jsonl.readLineAlloc(stdout_file.reader(), allocator, options.max_line_bytes) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
+        error.OutOfMemory => {
+            waitQuiet(&child);
+            return error.OutOfMemory;
+        },
         else => {
             waitQuiet(&child);
             return error.TransportFailure;
@@ -114,7 +117,10 @@ pub fn runWithOptions(
     defer allocator.free(line);
 
     var parsed_value = drive_jsonl.parseEventLine(allocator, line) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
+        error.OutOfMemory => {
+            waitQuiet(&child);
+            return error.OutOfMemory;
+        },
         error.EmptyLine => {
             waitQuiet(&child);
             return error.NoResponse;
@@ -129,7 +135,10 @@ pub fn runWithOptions(
     var parsed_response = std.json.parseFromValue(Response, allocator, parsed_value.value, .{
         .ignore_unknown_fields = true,
     }) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
+        error.OutOfMemory => {
+            waitQuiet(&child);
+            return error.OutOfMemory;
+        },
         else => {
             waitQuiet(&child);
             return error.InvalidResponse;
