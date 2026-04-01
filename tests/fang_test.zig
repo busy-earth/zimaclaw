@@ -65,3 +65,7 @@ test "fang uses deterministic issue file path" {
 
     try testing.expectEqualStrings(expected, path);
 }
+
+test "ci forced failure proof for BUS-18" {
+    try testing.expect(false);
+}
