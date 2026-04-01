@@ -1,137 +1,464 @@
 # Zimaclaw Architecture Validation
 
-## Product Vision
+## Scope
 
-Zimaclaw is a single Zig binary that listens for task requests over XMPP, evaluates Emacs Lisp expressions through emacsclient to observe and manipulate the file system, and communicates with the Pi coding agent over JSON-RPC to execute multi-step programming tasks, all running on a headless NixOS machine whose entire system configuration, services, and dotfiles are declared in a version-controlled Nix flake so that the complete environment can be reproduced or rolled back with a single command.
+This document validates the architecture described in the product vision after the final research round. The important shift is that Zimaclaw is **not** just "XMPP + Emacs + Pi on NixOS". It is an issue-centered orchestration product with:
 
----
+* a named component model,
+* a predispatch simulation harness,
+* an execution DAG,
+* a human approval gate between simulation and execution,
+* and a prototype-first, throwaway-first build strategy.
 
-## Component-by-Component Validation
-
-### 1. Zig as Orchestrator — SOUND
-
-**Process spawning and stdin/stdout pipes**: Zig's `std.process.Child` supports `.Pipe` behavior for stdin, stdout, and stderr. Real-world usage confirmed on Ziggit forums (e.g., piping to ffmpeg, pkl server). There is an open overhaul issue (ziglang/zig#22504) noting that the init/spawn flow is "fragile" and the API is being redesigned, but the current API works for our use case of spawning a single long-lived child process (Pi) and reading/writing its pipes.
-
-**JSON parsing**: `std.json` is mature. `parseFromJson` deserializes directly into Zig structs with full type safety. `std.json.stringify` serializes back. Diagnostics available for error reporting. Arena allocator pattern well-documented. This is production-grade for our needs (parsing Pi's JSONL output).
-
-**C interop**: Zig's `@cImport` / `translate-c` works reliably for C libraries. The `zig translate-c` tool can auto-translate C headers, and `linkSystemLibrary` handles linking. This is the path for libstrophe (XMPP). Video evidence from 2025 confirms successful integration of C libraries (libssh2 example).
-
-**Verdict**: Zig is a sound choice. The process/pipe API is functional today despite ongoing refinement. JSON and C interop are mature.
+The goal here is to validate the core technical bets, note the real risks, and call out where the architecture should stay minimal.
 
 ---
 
-### 2. XMPP via libstrophe C bindings — SOUND WITH EFFORT
+## Validation Summary
 
-**No native Zig XMPP library exists.** The awesome-zig list and XMPP ecosystem surveys show libraries for Python (slixmpp), C++ (QXmpp), Go (go-xmpp), Rust (xmpp-rs), JavaScript (xmpp.js), and Lua (Verse) — but nothing for Zig.
-
-**libstrophe is the right C library.** It's minimal, well-maintained (active since 2013, current maintainer since 2022), supports SASL auth, STARTTLS, XEP-0198 stream management, and has a simple callback-based API. It depends only on expat/libxml for XML parsing. Licensed MIT/GPLv3 dual.
-
-**Integration path**: Use Zig's `@cImport(@cInclude("strophe.h"))` to import libstrophe, then `linkSystemLibrary("strophe")` in build.zig. The callback-based API (`xmpp_conn_set_jid`, `xmpp_connect_client`, `xmpp_run`) maps cleanly to Zig. NixOS provides `pkgs.libstrophe` for the system dependency.
-
-**Risk**: Writing Zig wrapper code around a C callback API requires care with memory management and pointer lifetimes. This is the most novel code in the project — no one has done Zig + libstrophe before. Estimate ~500 lines of wrapper code.
-
-**Alternative if blocked**: Shell out to `sendxmpp` or `profanity` CLI as an interim, then replace with native bindings.
-
-**Verdict**: Sound, but requires original engineering. libstrophe is proven; the Zig binding is not.
-
----
-
-### 3. emacsclient --eval as Steer Interface — SOUND WITH CAVEATS
-
-**Basic operation is reliable.** `emacsclient --eval '(expression)'` sends elisp to the Emacs daemon and prints the return value to stdout. Works without any open frames when the daemon is running (`emacs --daemon`). Confirmed by multiple sources including the Emacs manual and Reddit.
-
-**Concurrency limitation**: Emacs is single-threaded. Concurrent `emacsclient --eval` calls are serialized — the daemon processes them one at a time. This is fine for Zimaclaw because the orchestrator sends sequential commands (not parallel). However, if a long-running elisp expression blocks (e.g., a large magit operation), subsequent calls will queue.
-
-**Structured data return**: `(json-encode ...)` in elisp returns JSON strings to stdout. For large data (e.g., entire buffer contents), this works but very large structures (megabytes) can cause issues — Stack Overflow reports Emacs crashing on huge recursive JSON encoding due to `max-lisp-eval-depth`. Mitigation: chunk large data, or use `(with-temp-buffer (insert (buffer-string ...)) (write-file "/tmp/zimaclaw-out.json"))` and read the file from Zig instead.
-
-**Failure modes**: 
-- Emacs daemon not running → emacsclient exits with error code, Zig detects
-- Socket gone → emacsclient reports "can't find socket", Zig detects
-- Elisp error → Emacs returns error string to stderr, Zig can parse
-- Emacs hang → timeout in Zig process spawn, kill and restart daemon
-
-**Latency**: emacsclient startup is essentially instant on Linux (no 2-3s delay that Windows/Spacemacs users report). On headless NixOS with `emacs-nox`, expect <50ms round-trip for simple evaluations.
-
-**Verdict**: Sound. The single-threaded nature is a feature, not a bug — it prevents race conditions on file state. Just don't send blocking operations.
+| Area | Verdict | Notes |
+|------|---------|-------|
+| Claw as Zig supervisor | SOUND | Zig is a good fit for orchestration, process ownership, and policy enforcement. |
+| Jaw via libstrophe | SOUND WITH EFFORT | Correct transport choice, but requires original Zig wrapper work. |
+| Steer via `emacsclient --eval` | SOUND WITH CAVEATS | Strong differentiator; must respect Emacs serialization and payload limits. |
+| Drive via Pi subprocess + JSONL | SOUND | Strong core architecture if Pi is pinned. |
+| Fang as local issue store | SOUND | TOML/JSON/file-backed FSM is straightforward and matches product needs. |
+| Venom as simulation harness | SOUND | Architecturally coherent and product-defining; main complexity is policy/workspace separation, not feasibility. |
+| Spine via SSE | SOUND | Simple, observable, and fits the UI well. |
+| Shell as constrained Zig tool | SOUND | Narrow exception to Emacs-first model; should stay heavily constrained. |
+| Web search abstraction | SOUND | Useful in both simulation and execution, easy to encapsulate. |
+| Svelte UI + SSE | SOUND | Best fit for private dashboard and live issue cards. |
+| Backstage actor framework | HIGH RISK / REJECT | Unnecessary and too experimental. |
+| ZigJR as a required dependency | UNNECESSARY BY DEFAULT | Sound library, but stdlib-first is the better default. |
+| NixOS / flake deployment | SOUND | Strongest environment choice in the stack. |
 
 ---
 
-### 4. Pi JSON-RPC over stdin/stdout — SOUND WITH KNOWN BUG (FIXED)
+## Named Components
 
-**Protocol is comprehensive.** Pi's RPC mode offers 25+ commands covering prompting (`prompt`, `steer`, `follow_up`, `abort`), state management (`get_state`, `get_messages`), model switching, thinking levels, session management (`fork`, `switch_session`, `export_html`), and bash execution. Streaming events cover the full agent lifecycle (`agent_start`, `turn_start`, `message_update` with `text_delta`, `tool_execution_start/end`, `agent_end`).
+The architecture is clearest when validated through the named components:
 
-**Transport**: JSONL (JSON Lines) over stdin/stdout, LF-delimited. Commands are sent as one JSON object per line to stdin. Events and responses come as JSON objects on stdout.
+| Component | Validated role |
+|-----------|----------------|
+| **Claw** | Top-level Zig runtime, process supervisor, issue lifecycle controller, policy engine |
+| **Jaw** | XMPP ingress transport |
+| **Steer** | Emacs interface and computer tool |
+| **Drive** | Pi subprocess mediation layer |
+| **Fang** | Durable issue store and FSM |
+| **Venom** | Predispatch simulation harness |
+| **Web** | Shared web-search abstraction |
+| **Spine** | SSE event hub |
+| **Shell** | Narrow Zig exec wrapper |
+| **Marrow** | NixOS flake and deployment layer |
+| **Molt** | Throwaway prototype layer |
 
-**Known bug (closed)**: Issue #1911 reported that `U+2028`/`U+2029` Unicode line separators in payloads broke JSONL framing because Node.js `readline` treats them as line terminators. The issue is marked closed. Since Zimaclaw uses Zig (not Node.js) to read Pi's stdout, we control our own line splitting — split on `\n` only, ignore `U+2028`/`U+2029`. This bug does not affect us.
-
-**No stability guarantees**: The Pi RPC protocol has no versioning, no semantic versioning, no stability annotations. It's implementation-coupled to the Pi source. This means protocol changes could break Zimaclaw on Pi upgrades. Mitigation: pin the Pi version in the Nix flake (`buildNpmPackage` with a specific commit hash).
-
-**Verdict**: Sound. The protocol is rich and well-documented. The lack of versioning is a real risk, mitigated by Nix version pinning.
-
----
-
-### 5. Backstage Actor Framework — HIGH RISK
-
-**Explicitly experimental.** The README states: "This repository contains an **experimental** actor framework." 43 GitHub stars. Unclear number of contributors and last commit date. No version releases. No stated Zig version compatibility.
-
-**libxev dependency**: libxev (by Mitchell Hashimoto of HashiCorp/Ghostty fame) is more mature — actively maintained, supports Zig 0.14, has CI, tested on Linux/macOS/WASM. libxev itself is sound. But Backstage's layer on top is unproven.
-
-**Risk**: If Backstage breaks on a Zig version update, or has bugs in supervision/restart logic, we're stuck debugging someone else's experimental framework. The actor model it provides (message passing, lifecycle, supervision) is ~500 lines of code that could be written directly.
-
-**Alternative**: Skip Backstage entirely. Use Zig's built-in threading (`std.Thread`) with channels, or just use sequential processing — Zimaclaw's concurrency needs are modest (one XMPP listener, one emacsclient controller, one Pi process). A simple event loop with select/poll on the three I/O sources would suffice.
-
-**Verdict**: HIGH RISK. Recommend dropping Backstage and using direct Zig concurrency primitives or a simple hand-rolled event loop. The actor model adds complexity without proportional benefit for a system with only 3 concurrent concerns.
+The named model is not just naming polish. It improves system readability and keeps interfaces from drifting into a pile of unnamed "services" and "helpers".
 
 ---
 
-### 6. ZigJR JSON-RPC Library — SOUND
+## 1. Claw: Zig as Supervisor — SOUND
 
-**Feature-complete and well-documented.** ZigJR provides:
-- Full JSON-RPC 2.0 parsing and composition
-- Newline-delimited streaming (`requestsByDelimiter`) — exactly what Pi's JSONL protocol needs
-- Content-Length header-based streaming (for LSP-style protocols)
-- Native Zig function dispatch with automatic type mapping
-- Logging mechanism for debugging
-- Batch request/response support
+Zig remains the right top-level orchestrator language.
 
-**Released as version 1.0.0** with proper `zig fetch` installation. Listed in awesome-zig. Published June 2025. The `stream.requestsByDelimiter()` function maps directly to reading Pi's `\n`-delimited JSONL output.
+### Why it holds
 
-**The `lsp_client.zig` example** shows handling mixed requests and responses in a stream — this is exactly our use case (sending commands to Pi, receiving streaming events back).
+* `std.process.Child` is good enough today for long-lived subprocess management.
+* `std.json` is sufficient for JSONL framing, event decoding, and internal artifact serialization.
+* Zig's C interop makes Jaw feasible through `libstrophe`.
+* The deployment target is a single binary on a headless machine, which Zig suits well.
 
-**Verdict**: Sound. This is a real library solving our exact problem with proper releases and documentation.
+### Architectural fit
 
----
+Claw needs to:
 
-### 7. NixOS as Appliance OS — SOUND
+* own a process tree,
+* supervise Drive / Steer / Jaw interactions,
+* enforce simulation-vs-execution policy,
+* manage issue state,
+* and publish Spine events.
 
-**Headless NixOS is well-proven** for server/appliance use. Minimal install is <2GB. `emacs-nox`, `nodejs`, `prosody`, `tailscale`, `zig` are all in nixpkgs. The flake + home-manager pattern is standard (Tony and Joshua's videos demonstrate it thoroughly).
+That is closer to a small systems program than to a framework-heavy service. Zig is a good match.
 
-**Zig packaging**: zig2nix exists and is actively maintained. It handles `build.zig.zon` dependencies via lock files. Cross-compilation to aarch64 is supported. This is the main gap in the Nix ecosystem for Zig — zig2nix bridges it.
+### Main caveat
 
-**Node.js/Pi packaging**: `buildNpmPackage` is the standard nixpkgs approach. Requires `package-lock.json` and an `npmDepsHash`. The `fakeHash` workflow is well-documented. Pi can be packaged this way.
+Zig's process APIs are evolving, so the code should prefer thin wrappers and local abstractions instead of baking deep assumptions about today's API shape into the whole codebase.
 
-**Rollback**: `nixos-rebuild switch --rollback` is battle-tested. Each `nixos-rebuild switch` creates a new system generation that appears in the bootloader. This is one of NixOS's strongest features.
-
-**Potential gap**: NixOS package freshness — ~10% of nixpkgs is outdated at any time (per Repology). For fast-moving tools like Pi, pinning to a specific commit in the flake is the right strategy (which we're already doing).
-
-**Verdict**: Sound. NixOS is the strongest architectural choice in the stack.
+**Verdict:** SOUND.
 
 ---
 
-## Risk Summary
+## 2. Jaw: XMPP via libstrophe — SOUND WITH EFFORT
 
-| Component | Verdict | Risk Level | Key Concern |
-|-----------|---------|------------|-------------|
-| Zig orchestrator | Sound | LOW | `std.process.Child` API being redesigned, but current API works |
-| XMPP/libstrophe | Sound with effort | MEDIUM | No existing Zig bindings; ~500 lines of C wrapper code needed |
-| emacsclient --eval | Sound with caveats | LOW | Single-threaded serialization; large JSON encoding limits |
-| Pi JSON-RPC | Sound | MEDIUM | No protocol versioning; mitigated by Nix version pinning |
-| Backstage actors | HIGH RISK | HIGH | Experimental, 43 stars, no releases, unclear maintenance |
-| ZigJR | Sound | LOW | Well-documented 1.0 release, solves exact problem |
-| NixOS | Sound | LOW | Strongest choice; battle-tested reproducibility |
+There is still no compelling native Zig XMPP alternative. `libstrophe` remains the right practical choice.
+
+### Why it holds
+
+* Mature C library
+* Small surface area
+* Good enough features for a prompt ingress transport
+* Available in NixOS packaging
+
+### Important clarification
+
+The product core is **Jaw**, not "run your own Prosody server". Self-hosted Prosody remains a valid **Marrow deployment option**, but it is not the same thing as the product architecture. Jaw should validate against XMPP transport concerns first.
+
+### Real risk
+
+The main difficulty is not conceptual, but implementation detail:
+
+* callback lifetimes,
+* memory ownership,
+* error propagation,
+* reconnect behavior,
+* and safe integration into the Zig event loop.
+
+**Verdict:** SOUND WITH EFFORT.
+
+---
+
+## 3. Steer: `emacsclient --eval` as the Computer Interface — SOUND WITH CAVEATS
+
+Steer is still one of the strongest bets in the architecture.
+
+### Why it holds
+
+* `emacsclient --eval` is mature and practical.
+* Emacs gives structured access to files, buffers, navigation, and editor-state operations.
+* It is a better match for the "Emacs Bench" product idea than trying to tunnel everything through bash.
+
+### Constraints that must be treated as first-class
+
+* Emacs is single-threaded.
+* Calls must be serialized.
+* Large return payloads should use chunking or file handoff.
+* Long-running calls need timeout and daemon recovery paths.
+
+### Product impact
+
+This is not just a tool choice; it is a differentiator. If Zimaclaw weakens into "Steer sometimes, bash otherwise", the core product idea gets diluted.
+
+**Verdict:** SOUND WITH CAVEATS.
+
+---
+
+## 4. Drive: Pi subprocess + JSONL mediation — SOUND
+
+Using Pi as a pinned subprocess remains a strong architectural decision.
+
+### Why it holds
+
+* Clean separation between orchestrator and coding worker
+* Easy tool mediation at the process boundary
+* Isolation from Pi's internal implementation changes, as long as the pinned version is respected
+* Natural fit for streaming events and tool-call interception
+
+### Important constraint
+
+Pi should remain:
+
+* a subprocess,
+* version-pinned in Marrow,
+* and tool-mediated by Drive.
+
+Zimaclaw should not become coupled to Pi as if it were a stable embedded library.
+
+### JSONL framing
+
+LF-delimited JSONL remains the correct framing at the Zig boundary. The known Unicode line-separator bug in other runtimes is not a blocker if Claw/Drive split only on `\n`.
+
+**Verdict:** SOUND.
+
+---
+
+## 5. Fang: local issue store and FSM — SOUND
+
+Fang is a product-critical component, and there is nothing technically exotic about building it.
+
+### Why it holds
+
+The issue object naturally wants to persist:
+
+* lifecycle state,
+* acceptance criteria,
+* simulation artifacts,
+* DAG proposals,
+* execution metadata,
+* review decisions.
+
+A file-backed store with a clear FSM is enough for the product stage described by the docs.
+
+### Good default
+
+Start with a simple file-backed store (TOML or JSON plus directories for artifacts), not a database-first design.
+
+**Verdict:** SOUND.
+
+---
+
+## 6. Venom: predispatch simulation harness — SOUND
+
+Venom is one of the most important new architectural additions, and it is technically plausible.
+
+### Why it holds
+
+The harness does not ask for a fundamentally different stack. It reuses:
+
+* Drive for Pi,
+* Steer for Emacs operations,
+* Web for research,
+* Spine for observability,
+* Fang for persistence.
+
+The novel part is the **policy and workflow distinction** between simulate and execute.
+
+### Main architectural requirement
+
+Venom needs explicit workspace policy:
+
+* scratch tree, temp branch, or synthetic workspace in simulation,
+* real branch/worktree in execution.
+
+Without that separation, simulation will leak prototype slop into the real build.
+
+**Verdict:** SOUND.
+
+---
+
+## 7. Spine: SSE event hub — SOUND
+
+Spine is a clean fit for the product.
+
+### Why it holds
+
+* SSE is simple.
+* The UI is mostly a stream consumer, not a general bidirectional app shell.
+* Reconnect and replay behavior are straightforward.
+* It matches the issue-card / live-telemetry model well.
+
+### Event fit
+
+Spine can carry:
+
+* issue state changes,
+* simulation branch updates,
+* DAG revisions,
+* subagent progress,
+* Steer and Drive tool activity,
+* review transitions.
+
+**Verdict:** SOUND.
+
+---
+
+## 8. Shell: constrained Zig exec wrapper — SOUND
+
+The Shell component is validated precisely because it is narrow.
+
+### Why it holds
+
+The product explicitly does **not** want a general shell escape hatch. But it does need a safe way to run Zig toolchain operations.
+
+Restricting Shell to:
+
+* `zig build`
+* `zig test`
+* `zig fmt`
+* `zig run`
+
+keeps it understandable and auditable.
+
+### Constraint
+
+If Shell expands into "whatever bash can do", the architecture starts undermining Steer and the Emacs Bench idea.
+
+**Verdict:** SOUND.
+
+---
+
+## 9. Web: shared search abstraction — SOUND
+
+Web search belongs in both simulation and execution.
+
+### Why it holds
+
+* Simulation needs research and comparison work.
+* Execution sometimes needs targeted technical lookup.
+* The capability is simple to wrap behind a small Zig abstraction.
+
+This should remain an abstraction boundary, not a hard-coded dependency on one search provider.
+
+**Verdict:** SOUND.
+
+---
+
+## 10. UI: Svelte + SSE issue cards — SOUND
+
+The UI direction from `ui-deep-dive.md` remains the right choice.
+
+### Why it holds
+
+* Lightweight frontend
+* Works well with SSE
+* Good fit for issue cards and live telemetry
+* Avoids dragging in a heavyweight backend runtime just to mirror agent state
+
+### Important product fit
+
+The UI should render:
+
+* simulation track,
+* execution track,
+* issue artifacts,
+* DAG and review state,
+
+not just a terminal transcript.
+
+**Verdict:** SOUND.
+
+---
+
+## 11. Backstage actor framework — HIGH RISK / REJECT
+
+This remains a bad fit.
+
+### Why it does not pass
+
+* experimental
+* unnecessary for the scale of this system
+* extra dependency and conceptual complexity
+* little payoff for a product with a small number of core runtime concerns
+
+### Better option
+
+Use:
+
+* a simple event loop, or
+* Zig threads + queues,
+
+with explicit local abstractions.
+
+**Verdict:** HIGH RISK / REJECT.
+
+---
+
+## 12. ZigJR — SOUND, BUT NOT DEFAULT
+
+The earlier validation treated ZigJR as a likely integration layer. The final research round changes that recommendation.
+
+### Why the recommendation changed
+
+ZigJR appears sound and useful, but the updated dependency philosophy says:
+
+* prefer Zig stdlib first,
+* add dependencies only when the stdlib is clearly not enough.
+
+Pi's JSONL transport is simple enough that a stdlib-first implementation is the correct default starting point.
+
+### Practical recommendation
+
+Do **not** make ZigJR a foundational ticket or required dependency. Keep it as:
+
+* a fallback,
+* or a future refinement,
+
+if the hand-rolled transport becomes clearly too costly or error-prone.
+
+**Verdict:** SOUND, BUT UNNECESSARY BY DEFAULT.
+
+---
+
+## 13. Marrow: NixOS / flake deployment — SOUND
+
+This remains one of the strongest architectural choices.
+
+### Why it holds
+
+* reproducibility,
+* rollback,
+* pinning Pi and other dependencies,
+* declarative services,
+* strong fit for appliance-style deployment.
+
+### Product clarification
+
+Marrow is not just OS setup. It is the deployment truth for:
+
+* Zig package/build pins,
+* Pi pinning,
+* Emacs daemon setup,
+* service graph,
+* optional XMPP server configuration,
+* reproducible machine state.
+
+**Verdict:** SOUND.
+
+---
+
+## Dependency Strategy Validation
+
+The final docs strongly support a tighter dependency posture.
+
+### Validated dependency rules
+
+* Prefer Zig stdlib whenever practical.
+* Keep Pi pinned and external.
+* Accept `libstrophe` for Jaw.
+* Avoid framework-level dependencies unless forced by complexity.
+* Use `sorcy` before major dependency additions to keep the dependency surface visible.
+
+This means the architecture should resist:
+
+* actor-framework creep,
+* UI backend bloat,
+* transport-layer abstraction libraries unless clearly needed.
+
+---
+
+## Prototype Strategy Validation
+
+The throwaway-first strategy is validated as a **process architecture**, not just a product-management preference.
+
+### Why it holds
+
+The product has several unknowns that are best discovered by building a thin vertical slice:
+
+* Pi mediation behavior,
+* Emacs tool ergonomics,
+* issue artifact shapes,
+* simulation traces,
+* SSE/UI event shapes,
+* workspace separation between simulation and execution.
+
+Using Molt to discover these and then deleting it is a healthy strategy, not wasted work.
+
+**Verdict:** SOUND.
+
+---
+
+## Main Risks Still Worth Watching
+
+| Risk | Why it matters | Mitigation |
+|------|----------------|------------|
+| Zig + libstrophe wrapper complexity | Original glue code with callback/lifetime hazards | Keep Jaw thin, test reconnect/error cases early |
+| Emacs payload and blocking behavior | Can stall Steer or make large results awkward | Serialize calls, add timeouts, use file handoff for large outputs |
+| Pi protocol drift | No strong stability guarantees upstream | Pin Pi tightly in Marrow |
+| Simulation workspace leakage | Could contaminate the real build with prototype artifacts | Enforce simulate/execute workspace policy explicitly |
+| Architecture sprawl | Too many abstractions can bury the product | Keep components small, named, and dependency-light |
+
+---
 
 ## Recommendation
 
-**Drop Backstage.** Replace with a simple hand-rolled event loop or Zig's `std.Thread` with message queues. Zimaclaw has exactly 3 I/O concerns (XMPP socket, emacsclient subprocess, Pi subprocess) — an actor framework is overkill. A ~200 line event loop that polls all three sources would be simpler, more debuggable, and have zero external dependency risk.
+The architecture holds, with three major recommendations:
 
-Everything else is on sound footing. The architecture holds.
+1. **Keep the named component model.** It is one of the best clarity tools in the design.
+2. **Lean harder into simulation-first.** Venom is not a side feature; it is central to the product identity.
+3. **Stay stdlib-first and minimal.** Drop Backstage, avoid making ZigJR foundational, and keep Shell constrained.
+
+In short:
+
+* Claw + Jaw + Steer + Drive + Fang + Venom + Spine + Shell + Web + Marrow is a coherent architecture.
+* Molt is the right first build.
+* The biggest technical risks are wrapper/policy details, not the overall shape of the product.
+
+The architecture is strong enough to proceed. The important thing now is to make the backlog reflect it cleanly.્રણ to=functions.ApplyPatch code ***!
