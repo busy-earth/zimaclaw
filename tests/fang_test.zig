@@ -34,6 +34,7 @@ test "fang transitions issue state and updates timestamp" {
     var before = try store.loadIssue(testing.allocator, "issue-2");
     defer before.deinit();
 
+    try store.transitionIssue(testing.allocator, "issue-2", .planned);
     try store.transitionIssue(testing.allocator, "issue-2", .executing);
 
     var after = try store.loadIssue(testing.allocator, "issue-2");
@@ -41,6 +42,68 @@ test "fang transitions issue state and updates timestamp" {
 
     try testing.expect(after.value.state == .executing);
     try testing.expect(after.value.updated_at_ms >= before.value.updated_at_ms);
+}
+
+test "fang enforces review reject resend-to-planned flow" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(root);
+
+    const store = fang.Store.init(root);
+    try store.createIssueWithId(testing.allocator, "issue-4", "Review me", "go");
+    try store.transitionIssue(testing.allocator, "issue-4", .planned);
+    try store.transitionIssue(testing.allocator, "issue-4", .executing);
+    try store.transitionIssue(testing.allocator, "issue-4", .review);
+    try store.rejectIssue(testing.allocator, "issue-4", "needs narrower scope");
+    try store.transitionIssue(testing.allocator, "issue-4", .planned);
+
+    var loaded = try store.loadIssue(testing.allocator, "issue-4");
+    defer loaded.deinit();
+    try testing.expect(loaded.value.state == .planned);
+
+    const invalid = store.transitionIssue(testing.allocator, "issue-4", .done);
+    try testing.expectError(fang.TransitionError.InvalidTransition, invalid);
+}
+
+test "fang stores simulation and execution artifacts with timestamps" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const root = try tmp.dir.realpathAlloc(testing.allocator, ".");
+    defer testing.allocator.free(root);
+
+    const store = fang.Store.init(root);
+    try store.createIssueWithId(testing.allocator, "issue-5", "Artifacts", "go");
+
+    try store.setSimulationArtifactPath(
+        testing.allocator,
+        "issue-5",
+        ".zimaclaw/issues/issue-5/simulation/trace.json",
+    );
+    try store.setExecutionArtifactPath(
+        testing.allocator,
+        "issue-5",
+        ".zimaclaw/issues/issue-5/execution/events.jsonl",
+    );
+
+    var loaded = try store.loadIssue(testing.allocator, "issue-5");
+    defer loaded.deinit();
+
+    try testing.expect(loaded.value.simulation_artifact != null);
+    try testing.expectEqualStrings(
+        ".zimaclaw/issues/issue-5/simulation/trace.json",
+        loaded.value.simulation_artifact.?.path,
+    );
+    try testing.expect(loaded.value.simulation_artifact.?.recorded_at_ms > 0);
+
+    try testing.expect(loaded.value.execution_artifact != null);
+    try testing.expectEqualStrings(
+        ".zimaclaw/issues/issue-5/execution/events.jsonl",
+        loaded.value.execution_artifact.?.path,
+    );
+    try testing.expect(loaded.value.execution_artifact.?.recorded_at_ms > 0);
 }
 
 test "fang uses deterministic issue file path" {

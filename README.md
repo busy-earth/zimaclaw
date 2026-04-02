@@ -33,7 +33,8 @@ Shipped in this slice:
 - `zimaclaw issue create --title ... --prompt ...`
 - `zimaclaw issue show <issue-id>`
 - `zimaclaw molt run --prompt ...` end-to-end through Fang + Drive + Steer + Spine
-- Deterministic issue transitions: `inbox -> executing -> review|failed`
+- Deterministic issue transitions: `inbox -> planned -> executing -> review|failed`
+- Explicit review rejection loop: `review -> rejected -> planned`
 - JSONL event trail persisted at `.zimaclaw/issues/<issue-id>/events.jsonl`
 
 Still deferred:

@@ -142,6 +142,7 @@ pub fn runMoltWithOptions(
 
     _ = try spine.emit(.run_started, .{ .issue_id = issue_id });
     _ = try spine.emit(.issue_created, .{ .issue_id = issue_id });
+    try store.transitionIssue(allocator, issue_id, .planned);
     try store.transitionIssue(allocator, issue_id, .executing);
     _ = try spine.emit(.drive_spawned, .{ .issue_id = issue_id });
 
@@ -223,14 +224,7 @@ fn setExecutionArtifact(
     issue_id: []const u8,
     events_path: []const u8,
 ) !void {
-    var loaded = try store.loadIssue(allocator, issue_id);
-    defer loaded.deinit();
-
-    var updated = loaded.value;
-    updated.execution_artifact = events_path;
-    updated.updated_at_ms = std.time.milliTimestamp();
-
-    try store.saveIssue(allocator, updated);
+    try store.setExecutionArtifactPath(allocator, issue_id, events_path);
 }
 
 fn getFlagValue(args: []const []const u8, flag: []const u8) ?[]const u8 {
