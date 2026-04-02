@@ -1,9 +1,17 @@
 pub const IssueState = enum {
     inbox,
+    planned,
+    simulating,
     executing,
     review,
+    rejected,
     done,
     failed,
+};
+
+pub const ArtifactRef = struct {
+    path: []const u8,
+    recorded_at_ms: i64,
 };
 
 pub const Issue = struct {
@@ -14,6 +22,7 @@ pub const Issue = struct {
     created_at_ms: i64,
     updated_at_ms: i64,
     acceptance_criteria: ?[]const u8 = null,
-    simulation_artifact: ?[]const u8 = null,
-    execution_artifact: ?[]const u8 = null,
+    simulation_artifact: ?ArtifactRef = null,
+    execution_artifact: ?ArtifactRef = null,
+    rejection_reason: ?[]const u8 = null,
 };

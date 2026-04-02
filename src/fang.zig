@@ -3,6 +3,26 @@ const types = @import("types.zig");
 
 pub const IssueState = types.IssueState;
 pub const Issue = types.Issue;
+pub const ArtifactRef = types.ArtifactRef;
+
+pub const TransitionError = error{
+    InvalidTransition,
+};
+
+pub fn canTransition(from: IssueState, to: IssueState) bool {
+    if (from == to) return true;
+
+    return switch (from) {
+        .inbox => to == .planned or to == .executing,
+        .planned => to == .simulating or to == .executing,
+        .simulating => to == .planned or to == .executing,
+        .executing => to == .review or to == .failed,
+        .review => to == .done or to == .rejected,
+        .rejected => to == .planned,
+        .failed => to == .planned,
+        .done => false,
+    };
+}
 
 pub const Store = struct {
     root_path: []const u8,
@@ -64,9 +84,75 @@ pub const Store = struct {
         defer loaded.deinit();
 
         var updated = loaded.value;
+        if (!canTransition(updated.state, new_state)) {
+            return TransitionError.InvalidTransition;
+        }
         updated.state = new_state;
+        if (new_state != .rejected) {
+            updated.rejection_reason = null;
+        }
         updated.updated_at_ms = std.time.milliTimestamp();
 
+        try self.saveIssue(allocator, updated);
+    }
+
+    pub fn rejectIssue(
+        self: *const Store,
+        allocator: std.mem.Allocator,
+        id: []const u8,
+        reason: []const u8,
+    ) !void {
+        var loaded = try self.loadIssue(allocator, id);
+        defer loaded.deinit();
+
+        var updated = loaded.value;
+        if (!canTransition(updated.state, .rejected)) {
+            return TransitionError.InvalidTransition;
+        }
+        updated.state = .rejected;
+        updated.rejection_reason = reason;
+        updated.updated_at_ms = std.time.milliTimestamp();
+        try self.saveIssue(allocator, updated);
+    }
+
+    pub fn setSimulationArtifactPath(
+        self: *const Store,
+        allocator: std.mem.Allocator,
+        id: []const u8,
+        artifact_path: []const u8,
+    ) !void {
+        try self.setArtifactPath(allocator, id, .simulation, artifact_path);
+    }
+
+    pub fn setExecutionArtifactPath(
+        self: *const Store,
+        allocator: std.mem.Allocator,
+        id: []const u8,
+        artifact_path: []const u8,
+    ) !void {
+        try self.setArtifactPath(allocator, id, .execution, artifact_path);
+    }
+
+    fn setArtifactPath(
+        self: *const Store,
+        allocator: std.mem.Allocator,
+        id: []const u8,
+        which: enum { simulation, execution },
+        artifact_path: []const u8,
+    ) !void {
+        var loaded = try self.loadIssue(allocator, id);
+        defer loaded.deinit();
+
+        var updated = loaded.value;
+        const artifact: ArtifactRef = .{
+            .path = artifact_path,
+            .recorded_at_ms = std.time.milliTimestamp(),
+        };
+        switch (which) {
+            .simulation => updated.simulation_artifact = artifact,
+            .execution => updated.execution_artifact = artifact,
+        }
+        updated.updated_at_ms = std.time.milliTimestamp();
         try self.saveIssue(allocator, updated);
     }
 

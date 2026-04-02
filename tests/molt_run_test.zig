@@ -27,10 +27,11 @@ test "molt run drives issue to review with event trail" {
 
     try testing.expect(loaded.value.state == .review);
     try testing.expect(loaded.value.execution_artifact != null);
+    try testing.expect(loaded.value.execution_artifact.?.recorded_at_ms > 0);
 
     const event_payload = try std.fs.cwd().readFileAlloc(
         testing.allocator,
-        loaded.value.execution_artifact.?,
+        loaded.value.execution_artifact.?.path,
         1024 * 1024,
     );
     defer testing.allocator.free(event_payload);
@@ -74,10 +75,11 @@ test "molt run marks issue failed when steer is unavailable" {
 
     try testing.expect(loaded.value.state == .failed);
     try testing.expect(loaded.value.execution_artifact != null);
+    try testing.expect(loaded.value.execution_artifact.?.recorded_at_ms > 0);
 
     const event_payload = try std.fs.cwd().readFileAlloc(
         testing.allocator,
-        loaded.value.execution_artifact.?,
+        loaded.value.execution_artifact.?.path,
         1024 * 1024,
     );
     defer testing.allocator.free(event_payload);
